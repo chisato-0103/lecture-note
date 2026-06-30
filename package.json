@@ -1,0 +1,50 @@
+{
+  "name": "lecture-note",
+  "version": "0.1.0",
+  "private": true,
+  "author": "chisato",
+  "type": "module",
+  "description": "講義を録音し、文字起こし→整形→要約して階層Markdownノートを生成する",
+  "main": "dist/electron/main.js",
+  "bin": {
+    "lecture-note": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "app": "npm run generate-icons && npm run build && electron .",
+    "generate-icons": "node scripts/generate-icons.mjs",
+    "dist": "npm run generate-icons && npm run build && electron-builder --dir",
+    "dist:dmg": "npm run generate-icons && npm run build && electron-builder",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "build": {
+    "appId": "com.lecture-note.app",
+    "productName": "講義ノート",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "assets/**/*",
+      "scripts/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": "dmg"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pngjs": "^6.0.5",
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
+    "pngjs": "^7.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

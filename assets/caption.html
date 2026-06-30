@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'unsafe-inline'"
+    />
+    <style>
+      /* 透過ウィンドウのため body/html は必ず透明（黒/灰背景バグ回避） */
+      html,
+      body {
+        margin: 0;
+        background: transparent;
+        overflow: hidden;
+        font-family: -apple-system, system-ui, sans-serif;
+        -webkit-user-select: none;
+        cursor: default;
+      }
+      #bar {
+        position: absolute;
+        left: 16px;
+        right: 16px;
+        bottom: 16px;
+        background: rgba(0, 0, 0, 0.62);
+        color: #fff;
+        border-radius: 12px;
+        padding: 10px 14px;
+        font-size: 20px;
+        line-height: 1.45;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+        backdrop-filter: blur(8px);
+      }
+      #text {
+        word-break: break-word;
+        max-height: 4.5em;
+        overflow: hidden;
+      }
+      /* 直近の確定セグメントを通常、それ以前を淡く表示 */
+      #text .old {
+        opacity: 0.55;
+      }
+      #status {
+        font-size: 12px;
+        opacity: 0.6;
+        margin-top: 6px;
+      }
+      /* 音声入力レベル（録音が生きているかの確認） */
+      #levelTrack {
+        height: 4px;
+        margin-top: 8px;
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.18);
+        overflow: hidden;
+      }
+      #level {
+        height: 100%;
+        width: 0%;
+        background: #4caf50;
+        transition: width 0.1s linear;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="bar">
+      <div id="text"></div>
+      <div id="levelTrack"><div id="level"></div></div>
+      <div id="status">準備中 …</div>
+    </div>
+    <script src="./caption.js"></script>
+  </body>
+</html>

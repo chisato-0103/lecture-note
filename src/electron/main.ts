@@ -22,6 +22,7 @@ import { checkDependencies, checkLiveCaptionDeps } from "../pipeline/deps.js";
 import { loadMaterials } from "../pipeline/material.js";
 import { atomicWriteFile, formatTimestamp } from "../util/files.js";
 import { LiveTranscriber } from "../pipeline/liveTranscribe.js";
+import { LiveCaptionFilter } from "../pipeline/liveCaption.js";
 import { rm } from "node:fs/promises";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -209,13 +210,18 @@ function pushLevel(level: { peakDb: number; rmsDb: number; level: number }): voi
 /** ライブ字幕（録音中の速報文字起こし）を開始する。失敗しても録音は止めない。 */
 function startLiveCaption(segmentDir: string): void {
   createCaptionWindow();
+  // 同じ文字列の連呼（クリップ内ループ・隣接クリップ重複）を抑止する。録音1回で1つ。
+  const captionFilter = new LiveCaptionFilter();
   const live = new LiveTranscriber({
     segmentDir,
     scriptPath: join(scriptsDir, "live_transcribe.py"),
     model: config.liveModel,
     initialPrompt: buildInitialPrompt(config.vocabulary),
     onReady: () => pushCaption({ ready: true }),
-    onText: (text) => pushCaption({ text }),
+    onText: (text) => {
+      const shown = captionFilter.filter(text);
+      if (shown) pushCaption({ text: shown });
+    },
     onError: (message) => pushCaption({ error: message }),
   });
   liveTranscriber = live;

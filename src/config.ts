@@ -25,7 +25,7 @@ export type AppConfig = {
   outputRoot: string;
   /** 録音中のライブ字幕（速報文字起こし）を表示するか */
   liveCaption: boolean;
-  /** ライブ字幕用の軽量 Whisper モデル（粗くてよい速報用） */
+  /** ライブ字幕用の Whisper モデル（速報用。精度と遅延のバランスで選ぶ） */
   liveModel: string;
 };
 
@@ -41,7 +41,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   cloudConsent: false,
   outputRoot: join(homedir(), "Documents", "講義ノート"),
   liveCaption: true,
-  liveModel: "mlx-community/whisper-base-mlx",
+  // base は日本語で精度が粗いため、ほぼ同等の遅延で精度が上がる small を既定にする。
+  // さらに軽くしたい場合は whisper-base-mlx / whisper-tiny-mlx に設定で下げられる。
+  liveModel: "mlx-community/whisper-small-mlx",
 };
 
 /** 語彙リストを --initial-prompt 用の1文字列にまとめる（長すぎると逆効果なので上限を設ける） */

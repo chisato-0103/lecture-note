@@ -98,7 +98,7 @@ async function probeLiveModel(model: string): Promise<DepStatus> {
   } catch {
     // 未取得
   }
-  return { name, ok: false, detail: "未取得", hint: `huggingface-cli download ${model}` };
+  return { name, ok: false, detail: "未取得", hint: `hf download ${model}` };
 }
 
 /** ライブ字幕の依存（Python+mlx_whisper、軽量モデル）を確認する。 */

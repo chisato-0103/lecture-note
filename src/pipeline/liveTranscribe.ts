@@ -71,6 +71,8 @@ export class LiveTranscriber {
   private pollTimer: NodeJS.Timeout | null = null;
   private stopped = false;
   private ready = false;
+  /** 一時停止中は新規セグメントを文字起こしせず破棄する（字幕テキストOFF時） */
+  private paused = false;
 
   private readonly queued = new Set<string>();
   private queue: string[] = [];
@@ -183,11 +185,31 @@ export class LiveTranscriber {
         await unlink(full).catch(() => {});
         continue;
       }
+      // 一時停止中（字幕テキストOFF）は文字起こしせず捨てる。バックログを溜めない。
+      if (this.paused) {
+        await unlink(full).catch(() => {});
+        continue;
+      }
       const r = await this.transcribeOne(full);
       if (r.error) this.options.onError?.(r.error);
       else if (r.text) this.options.onText(r.text);
       await unlink(full).catch(() => {});
     }
+  }
+
+  /** 字幕テキストOFF。以降のセグメントは破棄する（Python は常駐のまま）。 */
+  pause(): void {
+    this.paused = true;
+  }
+
+  /** 字幕テキストON。以降のセグメントを通常処理に戻す。 */
+  resume(): void {
+    this.paused = false;
+    this.kick();
+  }
+
+  get isPaused(): boolean {
+    return this.paused;
   }
 
   /** 録音停止時に呼ぶ。残りセグメントを処理し、Python を終了する。 */

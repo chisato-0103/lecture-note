@@ -7,6 +7,7 @@ const statusEl = document.getElementById("status");
 
 const MAX_SEGMENTS = 3; // 直近この件数ぶんを表示
 const segments = [];
+let textVisible = true; // 字幕テキストの表示状態（録音中トグル）
 
 function render() {
   textEl.innerHTML = "";
@@ -21,18 +22,33 @@ function render() {
 
 window.caption.onText(({ text, ready, error }) => {
   if (ready) {
-    statusEl.textContent = "認識中 …";
+    if (textVisible) statusEl.textContent = "認識中 …";
     return;
   }
   if (error) {
     statusEl.textContent = "字幕エラー（録音は継続中）";
     return;
   }
+  if (!textVisible) return; // 字幕オフ中は届いたテキストも無視
   if (!text) return; // 無音などで空テキストは無視
   segments.push(text);
   while (segments.length > MAX_SEGMENTS) segments.shift();
   statusEl.textContent = "";
   render();
+});
+
+// 字幕テキストの表示/非表示（録音モニタは常時表示のまま）。
+window.caption.onMode(({ textVisible: visible }) => {
+  textVisible = visible !== false;
+  if (textVisible) {
+    textEl.style.display = "";
+    statusEl.textContent = "認識中 …";
+  } else {
+    textEl.style.display = "none";
+    segments.length = 0; // 残っている字幕を消す
+    render();
+    statusEl.textContent = "字幕オフ（録音モニタ中）";
+  }
 });
 
 // 音声入力レベル（0..1）をバー幅に反映する。

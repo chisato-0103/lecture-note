@@ -23,7 +23,7 @@ export type AppConfig = {
   cloudConsent: boolean;
   /** 保存先ルート */
   outputRoot: string;
-  /** 録音中のライブ字幕（速報文字起こし）を表示するか */
+  /** 字幕テキストを録音開始時からオンにするか（録音モニタ＝音声レベルは常に表示。録音中トグル可） */
   liveCaption: boolean;
   /** ライブ字幕用の Whisper モデル（速報用。精度と遅延のバランスで選ぶ） */
   liveModel: string;

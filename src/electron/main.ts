@@ -35,6 +35,8 @@ let tray: Tray | null = null;
 let settingsWin: BrowserWindow | null = null;
 let captionWin: BrowserWindow | null = null;
 let liveTranscriber: LiveTranscriber | null = null;
+/** 字幕テキストの表示状態（録音中トグル）。音声レベルのモニタは常に表示する。 */
+let captionTextEnabled = true;
 let state: AppState = "idle";
 let recorder: Recorder | null = null;
 let elapsedTimer: NodeJS.Timeout | null = null;
@@ -90,6 +92,12 @@ function rebuildMenu(): void {
     }
   } else if (state === "recording") {
     items.push({ label: elapsedLabel(), enabled: false });
+    items.push({
+      label: "字幕テキストを表示",
+      type: "checkbox",
+      checked: captionTextEnabled,
+      click: () => setCaptionText(!captionTextEnabled),
+    });
     items.push({ label: "■ 停止してノート化", click: () => void stopAndProcess() });
   } else {
     items.push({ label: "処理中 …", enabled: false });
@@ -196,6 +204,22 @@ function pushCaption(payload: { text?: string; ready?: boolean; error?: string }
   }
 }
 
+/** 字幕テキストの表示/非表示をモニタ窓へ伝える。 */
+function pushCaptionMode(textVisible: boolean): void {
+  if (captionWin && !captionWin.isDestroyed()) {
+    captionWin.webContents.send("caption:mode", { textVisible });
+  }
+}
+
+/** 字幕テキストのオン/オフを反映する（文字起こしの一時停止/再開＋窓表示＋メニュー）。 */
+function setCaptionText(enabled: boolean): void {
+  captionTextEnabled = enabled;
+  if (enabled) liveTranscriber?.resume();
+  else liveTranscriber?.pause();
+  pushCaptionMode(enabled);
+  rebuildMenu();
+}
+
 let lastLevelSentAt = 0;
 /** 音声レベルを字幕ウィンドウへ送る（IPC負荷を抑えるため約150msに間引く）。 */
 function pushLevel(level: { peakDb: number; rmsDb: number; level: number }): void {
@@ -207,7 +231,10 @@ function pushLevel(level: { peakDb: number; rmsDb: number; level: number }): voi
   }
 }
 
-/** ライブ字幕（録音中の速報文字起こし）を開始する。失敗しても録音は止めない。 */
+/**
+ * 録音モニタ（音声レベル）＋ライブ字幕を開始する。失敗しても録音は止めない。
+ * 字幕テキストの初期状態は captionTextEnabled に従う（OFF なら文字起こしを一時停止）。
+ */
 function startLiveCaption(segmentDir: string): void {
   createCaptionWindow();
   // 同じ文字列の連呼（クリップ内ループ・隣接クリップ重複）を抑止する。録音1回で1つ。
@@ -225,6 +252,10 @@ function startLiveCaption(segmentDir: string): void {
     onError: (message) => pushCaption({ error: message }),
   });
   liveTranscriber = live;
+  // 字幕OFF開始なら文字起こしを止めておく（レベルバーは Recorder から常時流れる）。
+  if (!captionTextEnabled) live.pause();
+  // レンダラーの読込完了後に初期表示状態を送る（取りこぼし防止）。
+  captionWin?.webContents.once("did-finish-load", () => pushCaptionMode(captionTextEnabled));
   live.start().catch((err) => pushCaption({ error: errorMessage(err) }));
 }
 
@@ -243,11 +274,13 @@ async function startRecording(): Promise<void> {
   const audioPath = join(outDir, "録音.wav");
   const segmentDir = join(outDir, "live");
 
+  // 録音モニタ（レベルバー＋セグメント）は常に用意する。字幕テキストのオン/オフは
+  // 録音中にトグルできるため、ffmpeg 側の出力は最初から出しておく必要がある。
   recorder = new Recorder({
     deviceName: config.deviceName,
     outPath: audioPath,
-    segmentDir: config.liveCaption ? segmentDir : undefined,
-    onLevel: config.liveCaption ? pushLevel : undefined,
+    segmentDir,
+    onLevel: pushLevel,
   });
   try {
     await recorder.start();
@@ -262,9 +295,9 @@ async function startRecording(): Promise<void> {
   setState("recording");
   elapsedTimer = setInterval(rebuildMenu, 1000);
 
-  if (config.liveCaption) {
-    startLiveCaption(segmentDir);
-  }
+  // 字幕テキストの初期表示状態は設定 liveCaption（＝最初からオンにするか）に従う。
+  captionTextEnabled = config.liveCaption;
+  startLiveCaption(segmentDir);
 }
 
 /** claude（クラウド）利用時、未同意なら同意ダイアログを出す。許可なら true */

@@ -21,4 +21,10 @@ contextBridge.exposeInMainWorld("caption", {
     ipcRenderer.on("caption:level", h);
     return () => ipcRenderer.removeListener("caption:level", h);
   },
+  // 字幕テキストの表示/非表示モード（録音中トグル）。{ textVisible: boolean }
+  onMode: (cb) => {
+    const h = (_e, payload) => cb(payload);
+    ipcRenderer.on("caption:mode", h);
+    return () => ipcRenderer.removeListener("caption:mode", h);
+  },
 });

@@ -6,7 +6,7 @@ import { buildInitialPrompt, type AppConfig } from "../config.js";
 import { atomicWriteFile } from "../util/files.js";
 import { transcribe } from "./transcribe.js";
 import { removeHallucinationLoops } from "./clean.js";
-import { summarizeTranscript } from "../run.js";
+import { summarizeTranscript, MIN_TRANSCRIPT_CHARS } from "../run.js";
 import { makeSummarizer } from "../summarizerFactory.js";
 import { loadMaterials } from "./material.js";
 import { readJobMeta, filterExistingPaths } from "./jobMeta.js";
@@ -120,9 +120,20 @@ export async function processPendingJobs(deps: ProcessDeps): Promise<void> {
         cleaned = await readFile(transcriptPath, "utf8");
       }
 
+      // 無音（ほぼ空）なら終端化する。ノートを残して以後スキップし、毎回の再試行・再通知を防ぐ。
+      if (cleaned.trim().length < MIN_TRANSCRIPT_CHARS) {
+        await atomicWriteFile(
+          notePath,
+          "# （無音）\n\nこの録音はほぼ無音でした。マイクの位置・入力レベル・デバイス選択を確認してください。\n要約は作成していません。\n",
+        );
+        notify("無音のためノートは作成しませんでした", name);
+        continue;
+      }
+
       // 2) 要約（背景で可なら実行）。不可なら文字起こしまでで保留。
+      // 未同意（claude かつ未同意）なら要約せず文字起こしまでで保留。
+      // 復帰のたびに通知しない（同意すれば次回走査で要約される）。
       if (!canSummarizeInBackground(config.engine, config.cloudConsent)) {
-        notify("文字起こしを保存しました", `要約は未同意のため保留中: ${name}`);
         continue;
       }
 
@@ -137,7 +148,7 @@ export async function processPendingJobs(deps: ProcessDeps): Promise<void> {
       await atomicWriteFile(notePath, note);
       notify("ノート完成", notePath);
     } catch (err) {
-      notify("後処理に失敗しました（保留のまま残します）", err instanceof Error ? err.message : String(err));
+      notify(`後処理に失敗しました（保留のまま残します）: ${name}`, err instanceof Error ? err.message : String(err));
     }
   }
 }

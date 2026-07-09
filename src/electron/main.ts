@@ -9,6 +9,7 @@ import {
   ipcMain,
   dialog,
   screen,
+  powerMonitor,
 } from "electron";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +18,7 @@ import { loadConfig, saveConfig } from "../configStore.js";
 import { Recorder, listAudioDevices } from "../pipeline/record.js";
 import { transcribe } from "../pipeline/transcribe.js";
 import { processTranscript } from "../run.js";
+import { processPendingJobs } from "../pipeline/pendingJobs.js";
 import { makeSummarizer } from "../summarizerFactory.js";
 import { checkDependencies, checkLiveCaptionDeps } from "../pipeline/deps.js";
 import { loadMaterials } from "../pipeline/material.js";
@@ -45,6 +47,12 @@ let config: AppConfig;
 let currentJob: { outDir: string; audioPath: string; materialPaths: string[] } | null = null;
 /** 次の録音に添付する授業資料（録音開始時に確定） */
 let pendingMaterials: string[] = [];
+
+/** 録音中フォルダ（背景処理の対象から除外する）。 */
+let activeRecordingDir: string | null = null;
+/** 背景ジョブ処理の多重実行ガード。 */
+let jobRunning = false;
+let jobRerun = false;
 
 const idleIcon = nativeImage.createFromPath(join(assetsDir, "iconTemplate.png"));
 idleIcon.setTemplateImage(true);
@@ -389,6 +397,31 @@ async function stopAndProcess(): Promise<void> {
   }
 }
 
+/**
+ * 保留ジョブ処理を多重起動させずに走らせる。
+ * 実行中に再要求（起動時＋復帰が重なる等）が来たら、現在の周回終了後にもう一度走査する。
+ */
+async function runPendingJobsGuarded(): Promise<void> {
+  if (jobRunning) {
+    jobRerun = true;
+    return;
+  }
+  jobRunning = true;
+  try {
+    do {
+      jobRerun = false;
+      await processPendingJobs({
+        outputRoot: config.outputRoot,
+        config,
+        excludeDir: activeRecordingDir ?? undefined,
+        notify,
+      }).catch((err) => notify("後処理でエラー", errorMessage(err)));
+    } while (jobRerun);
+  } finally {
+    jobRunning = false;
+  }
+}
+
 function registerIpc(): void {
   ipcMain.handle("config:get", () => config);
   ipcMain.handle("config:save", async (_e, next: AppConfig) => {
@@ -454,6 +487,10 @@ app.whenReady().then(async () => {
   }
 
   void startupDependencyCheck();
+  // 起動時に未処理の録音を片付ける
+  void runPendingJobsGuarded();
+  // スリープ復帰時にも走らせる（次の教室でフタを開けた瞬間に文字起こしが進む）
+  powerMonitor.on("resume", () => void runPendingJobsGuarded());
 });
 
 app.on("window-all-closed", () => {

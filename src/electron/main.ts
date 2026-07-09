@@ -309,22 +309,20 @@ async function startRecording(): Promise<void> {
 /** claude（クラウド）利用時、未同意なら同意ダイアログを出す。許可なら true */
 async function ensureCloudConsent(): Promise<boolean> {
   if (config.engine !== "claude" || config.cloudConsent) return true;
-  const { response: r2, checkboxChecked } = await dialog.showMessageBox({
+  const { response: r2 } = await dialog.showMessageBox({
     type: "warning",
     buttons: ["同意して続行", "キャンセル"],
     defaultId: 0,
     cancelId: 1,
     title: "クラウド要約の確認",
     message: "要約のため文字起こしを claude（クラウド）へ送信します。",
-    detail: "講義内容が外部に送られます。ローカルのみで使いたい場合は設定で ollama を選んでください。",
-    checkboxLabel: "今後確認しない",
-    checkboxChecked: false,
+    detail:
+      "講義内容が外部に送られます。同意すると以降の録音もバックグラウンドで自動要約します（設定でいつでも ollama に変更できます）。",
   });
   if (r2 !== 0) return false;
-  if (checkboxChecked) {
-    config.cloudConsent = true;
-    await saveConfig(configPath(), config).catch(() => {});
-  }
+  // 一度同意したら永続化する（背景要約はダイアログを出せないため）
+  config.cloudConsent = true;
+  await saveConfig(configPath(), config).catch(() => {});
   return true;
 }
 

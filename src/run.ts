@@ -23,7 +23,7 @@ export type SummarizeTranscriptOptions = {
  * 長文はチャンク分割→部分要約→統合（段階要約）する。
  */
 /** これ未満の文字数なら「実質無音」とみなして要約に進まない */
-const MIN_TRANSCRIPT_CHARS = 10;
+export const MIN_TRANSCRIPT_CHARS = 10;
 
 export async function summarizeTranscript(
   transcript: string,

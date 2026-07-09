@@ -9,18 +9,17 @@ import {
   ipcMain,
   dialog,
   screen,
+  powerMonitor,
 } from "electron";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildInitialPrompt, type AppConfig } from "../config.js";
 import { loadConfig, saveConfig } from "../configStore.js";
 import { Recorder, listAudioDevices } from "../pipeline/record.js";
-import { transcribe } from "../pipeline/transcribe.js";
-import { processTranscript } from "../run.js";
-import { makeSummarizer } from "../summarizerFactory.js";
+import { processPendingJobs } from "../pipeline/pendingJobs.js";
+import { writeJobMeta } from "../pipeline/jobMeta.js";
 import { checkDependencies, checkLiveCaptionDeps } from "../pipeline/deps.js";
-import { loadMaterials } from "../pipeline/material.js";
-import { atomicWriteFile, formatTimestamp } from "../util/files.js";
+import { formatTimestamp } from "../util/files.js";
 import { LiveTranscriber } from "../pipeline/liveTranscribe.js";
 import { LiveCaptionFilter } from "../pipeline/liveCaption.js";
 import { rm } from "node:fs/promises";
@@ -45,6 +44,12 @@ let config: AppConfig;
 let currentJob: { outDir: string; audioPath: string; materialPaths: string[] } | null = null;
 /** 次の録音に添付する授業資料（録音開始時に確定） */
 let pendingMaterials: string[] = [];
+
+/** 録音中フォルダ（背景処理の対象から除外する）。 */
+let activeRecordingDir: string | null = null;
+/** 背景ジョブ処理の多重実行ガード。 */
+let jobRunning = false;
+let jobRerun = false;
 
 const idleIcon = nativeImage.createFromPath(join(assetsDir, "iconTemplate.png"));
 idleIcon.setTemplateImage(true);
@@ -291,6 +296,7 @@ async function startRecording(): Promise<void> {
   }
 
   currentJob = { outDir, audioPath, materialPaths: pendingMaterials };
+  activeRecordingDir = outDir;
   pendingMaterials = [];
   setState("recording");
   elapsedTimer = setInterval(rebuildMenu, 1000);
@@ -303,28 +309,26 @@ async function startRecording(): Promise<void> {
 /** claude（クラウド）利用時、未同意なら同意ダイアログを出す。許可なら true */
 async function ensureCloudConsent(): Promise<boolean> {
   if (config.engine !== "claude" || config.cloudConsent) return true;
-  const { response: r2, checkboxChecked } = await dialog.showMessageBox({
+  const { response: r2 } = await dialog.showMessageBox({
     type: "warning",
     buttons: ["同意して続行", "キャンセル"],
     defaultId: 0,
     cancelId: 1,
     title: "クラウド要約の確認",
     message: "要約のため文字起こしを claude（クラウド）へ送信します。",
-    detail: "講義内容が外部に送られます。ローカルのみで使いたい場合は設定で ollama を選んでください。",
-    checkboxLabel: "今後確認しない",
-    checkboxChecked: false,
+    detail:
+      "講義内容が外部に送られます。同意すると以降の録音もバックグラウンドで自動要約します（設定でいつでも ollama に変更できます）。",
   });
   if (r2 !== 0) return false;
-  if (checkboxChecked) {
-    config.cloudConsent = true;
-    await saveConfig(configPath(), config).catch(() => {});
-  }
+  // 一度同意したら永続化する（背景要約はダイアログを出せないため）
+  config.cloudConsent = true;
+  await saveConfig(configPath(), config).catch(() => {});
   return true;
 }
 
 async function stopAndProcess(): Promise<void> {
   if (state !== "recording" || !recorder || !currentJob) return;
-  const { outDir, audioPath, materialPaths } = currentJob;
+  const { outDir, materialPaths } = currentJob;
 
   if (elapsedTimer) {
     clearInterval(elapsedTimer);
@@ -337,55 +341,58 @@ async function stopAndProcess(): Promise<void> {
     recorder = null;
     await stopLiveCaption();
     await rm(join(outDir, "live"), { recursive: true, force: true }).catch(() => {});
-    notify("録音停止", "文字起こしを開始します");
 
-    const rawTranscript = await transcribe(audioPath, {
-      model: config.whisperModel,
-      language: config.language,
-      initialPrompt: buildInitialPrompt(config.vocabulary),
-      outputDir: outDir,
+    // 要約の同意（claude 初回のみ。ユーザーがその場にいるので一瞬）。
+    // 拒否時は cloudConsent が false のままなので、背景では文字起こしまでで保留になる。
+    await ensureCloudConsent();
+
+    // 背景要約に使う情報だけ保存（語彙・エンジン等は処理時の現在設定を使う）。
+    await writeJobMeta(outDir, {
+      recordedAt: new Date().toISOString(),
+      materialPaths,
     });
 
-    // クラウド送信の同意確認（claude のとき）
-    const allowed = await ensureCloudConsent();
-    if (!allowed) {
-      await atomicWriteFile(join(outDir, "文字起こし.txt"), rawTranscript);
-      notify("文字起こしのみ保存", "要約はキャンセルされました（クラウド送信を拒否）");
-      return;
-    }
-
-    const materials = materialPaths.length > 0 ? await loadMaterials(materialPaths) : "";
-
-    const transcriptPath = join(outDir, "文字起こし.txt");
-    const notePath = join(outDir, "ノート.md");
-
-    const summarizer = makeSummarizer({ engine: config.engine, model: config.model });
-    // 整形済み文字起こしは要約前に確定保存し、要約失敗でも残す
-    const { note } = await processTranscript(rawTranscript, summarizer, {
-      maxRepeats: config.maxRepeats,
-      maxCharsPerChunk: config.maxCharsPerChunk,
-      vocabulary: config.vocabulary,
-      materials,
-      onCleaned: async (cleaned) => {
-        await atomicWriteFile(transcriptPath, cleaned);
-      },
-    });
-
-    await atomicWriteFile(notePath, note);
-
-    notify("ノート完成", notePath);
-    await shell.openPath(notePath);
+    notify("録音を保存しました", "文字起こし・要約はバックグラウンドで進みます（フタを閉じてOK）");
   } catch (err) {
-    notify("処理に失敗しました", errorMessage(err));
+    notify("録音の保存に失敗しました", errorMessage(err));
   } finally {
     recorder = null;
     currentJob = null;
+    activeRecordingDir = null;
     destroyCaptionWindow();
     if (liveTranscriber) {
       void liveTranscriber.stop().catch(() => {});
       liveTranscriber = null;
     }
     setState("idle");
+  }
+
+  // idle に戻してから背景処理をキック（その場で待てば従来どおり完成する）。
+  void runPendingJobsGuarded();
+}
+
+/**
+ * 保留ジョブ処理を多重起動させずに走らせる。
+ * 実行中に再要求（起動時＋復帰が重なる等）が来たら、現在の周回終了後にもう一度走査する。
+ */
+async function runPendingJobsGuarded(): Promise<void> {
+  if (jobRunning) {
+    jobRerun = true;
+    return;
+  }
+  jobRunning = true;
+  try {
+    do {
+      jobRerun = false;
+      await processPendingJobs({
+        outputRoot: config.outputRoot,
+        config,
+        excludeDir: activeRecordingDir ?? undefined,
+        notify,
+      }).catch((err) => notify("後処理でエラー", errorMessage(err)));
+    } while (jobRerun);
+  } finally {
+    jobRunning = false;
   }
 }
 
@@ -454,6 +461,10 @@ app.whenReady().then(async () => {
   }
 
   void startupDependencyCheck();
+  // 起動時に未処理の録音を片付ける
+  void runPendingJobsGuarded();
+  // スリープ復帰時にも走らせる（次の教室でフタを開けた瞬間に文字起こしが進む）
+  powerMonitor.on("resume", () => void runPendingJobsGuarded());
 });
 
 app.on("window-all-closed", () => {

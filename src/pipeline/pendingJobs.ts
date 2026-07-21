@@ -10,6 +10,7 @@ import { summarizeTranscript, MIN_TRANSCRIPT_CHARS } from "../run.js";
 import { makeSummarizer } from "../summarizerFactory.js";
 import { loadMaterials } from "./material.js";
 import { readJobMeta, filterExistingPaths } from "./jobMeta.js";
+import { extractVocabulary, mergeVocabulary } from "./vocab.js";
 
 /** 各録音フォルダで「次にやること」。skip は対象外または完了。 */
 export type NextStage = "transcribe" | "summarize" | "skip";
@@ -105,13 +106,36 @@ export async function processPendingJobs(deps: ProcessDeps): Promise<void> {
       });
       if (stage === "skip") continue;
 
-      // 1) 文字起こし（未なら実行）。ローカル・ネット不要。
+      // 資料は語彙抽出（文字起こし前）と要約の両方で使うため先に読む。
+      // 読込失敗（pdftotext 未導入等）で文字起こしまで止めないよう、失敗時は資料なしで続行する。
+      const materialPaths = await filterExistingPaths((await readJobMeta(dir)).materialPaths);
+      let materials = "";
+      if (materialPaths.length > 0) {
+        try {
+          materials = await loadMaterials(materialPaths);
+        } catch (err) {
+          console.error(
+            `[lecture-note] 資料の読み込みに失敗（資料なしで続行）: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+
+      // 1) 文字起こし（未なら実行）。ローカル・ネット不要（語彙抽出のみ LLM を使う）。
+      let vocabulary = config.vocabulary;
       let cleaned: string;
       if (stage === "transcribe") {
+        // 資料があり、かつ背景で LLM を使ってよい場合のみ語彙を自動抽出する
+        if (materials !== "" && canSummarizeInBackground(config.engine, config.cloudConsent)) {
+          const extractor = makeSummarizer({ engine: config.engine, model: config.model });
+          const auto = await extractVocabulary(materials, extractor, (m) =>
+            console.error(`[lecture-note] ${m}`),
+          );
+          vocabulary = mergeVocabulary(auto, config.vocabulary);
+        }
         const raw = await transcribe(audioPath, {
           model: config.whisperModel,
           language: config.language,
-          initialPrompt: buildInitialPrompt(config.vocabulary),
+          initialPrompt: buildInitialPrompt(vocabulary),
           outputDir: dir,
         });
         cleaned = removeHallucinationLoops(raw, { maxRepeats: config.maxRepeats });
@@ -137,12 +161,10 @@ export async function processPendingJobs(deps: ProcessDeps): Promise<void> {
         continue;
       }
 
-      const materialPaths = await filterExistingPaths((await readJobMeta(dir)).materialPaths);
-      const materials = materialPaths.length > 0 ? await loadMaterials(materialPaths) : "";
       const summarizer = makeSummarizer({ engine: config.engine, model: config.model });
       const note = await summarizeTranscript(cleaned, summarizer, {
         maxCharsPerChunk: config.maxCharsPerChunk,
-        vocabulary: config.vocabulary,
+        vocabulary,
         materials,
       });
       await atomicWriteFile(notePath, note);

@@ -103,9 +103,10 @@ async function main(): Promise<void> {
     materials = await loadMaterials(materialPaths);
   }
 
-  // 資料があれば固有名詞を自動抽出し、手動語彙（優先＝末尾）と結合する
+  // 資料があれば固有名詞を自動抽出し、手動語彙（優先＝末尾）と結合する。
+  // 抽出は文字起こしの認識ヒント用なので、文字起こしをしない summarize では呼ばない。
   const resolveVocabulary = async (): Promise<string[]> => {
-    if (materials === "") return manualVocabulary;
+    if (materials === "" || mode === "summarize") return manualVocabulary;
     log("資料から語彙を抽出中 ...");
     const auto = await extractVocabulary(materials, summarizer, log);
     if (auto.length > 0) log(`抽出した語彙: ${auto.join("、")}`);

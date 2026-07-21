@@ -106,17 +106,23 @@ export async function processPendingJobs(deps: ProcessDeps): Promise<void> {
       });
       if (stage === "skip") continue;
 
+      // 背景で LLM を使えるか（語彙抽出・要約の両方がこれに従う）。
+      const canUseLlm = canSummarizeInBackground(config.engine, config.cloudConsent);
+      // 文字起こし済みで要約もできないなら、この周回でやることはない（資料も読まない）。
+      if (stage === "summarize" && !canUseLlm) continue;
+
       // 資料は語彙抽出（文字起こし前）と要約の両方で使うため先に読む。
-      // 読込失敗（pdftotext 未導入等）で文字起こしまで止めないよう、失敗時は資料なしで続行する。
-      const materialPaths = await filterExistingPaths((await readJobMeta(dir)).materialPaths);
+      // 読込失敗（pdftotext 未導入等）でも文字起こしは進めたいので、ここでは保留して要約直前で投げる。
       let materials = "";
-      if (materialPaths.length > 0) {
-        try {
-          materials = await loadMaterials(materialPaths);
-        } catch (err) {
-          console.error(
-            `[lecture-note] 資料の読み込みに失敗（資料なしで続行）: ${err instanceof Error ? err.message : String(err)}`,
-          );
+      let materialsError: unknown;
+      if (canUseLlm) {
+        const materialPaths = await filterExistingPaths((await readJobMeta(dir)).materialPaths);
+        if (materialPaths.length > 0) {
+          try {
+            materials = await loadMaterials(materialPaths);
+          } catch (err) {
+            materialsError = err;
+          }
         }
       }
 
@@ -124,8 +130,8 @@ export async function processPendingJobs(deps: ProcessDeps): Promise<void> {
       let vocabulary = config.vocabulary;
       let cleaned: string;
       if (stage === "transcribe") {
-        // 資料があり、かつ背景で LLM を使ってよい場合のみ語彙を自動抽出する
-        if (materials !== "" && canSummarizeInBackground(config.engine, config.cloudConsent)) {
+        // 資料が読めていれば固有名詞を自動抽出して認識ヒントにする
+        if (materials !== "") {
           const extractor = makeSummarizer({ engine: config.engine, model: config.model });
           const auto = await extractVocabulary(materials, extractor, (m) =>
             console.error(`[lecture-note] ${m}`),
@@ -157,9 +163,13 @@ export async function processPendingJobs(deps: ProcessDeps): Promise<void> {
       // 2) 要約（背景で可なら実行）。不可なら文字起こしまでで保留。
       // 未同意（claude かつ未同意）なら要約せず文字起こしまでで保留。
       // 復帰のたびに通知しない（同意すれば次回走査で要約される）。
-      if (!canSummarizeInBackground(config.engine, config.cloudConsent)) {
+      if (!canUseLlm) {
         continue;
       }
+
+      // 資料が読めていないまま要約すると「資料抜きのノート」が確定してしまう。
+      // ノートを書かずに保留へ戻し、原因（pdftotext 未導入等）を解消すれば次回走査で回復させる。
+      if (materialsError) throw materialsError;
 
       const summarizer = makeSummarizer({ engine: config.engine, model: config.model });
       const note = await summarizeTranscript(cleaned, summarizer, {

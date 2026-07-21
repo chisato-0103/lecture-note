@@ -21,6 +21,10 @@ describe("parseVocabularyResponse", () => {
     expect(parseVocabularyResponse(`根付,,${long},根付`)).toEqual(["根付"]);
   });
 
+  it("箇条書き記号・番号の前置きを剥がす", () => {
+    expect(parseVocabularyResponse("- 根付\n1. ED2\n・トヨタ")).toEqual(["根付", "ED2", "トヨタ"]);
+  });
+
   it("最大20語で打ち切る", () => {
     const response = Array.from({ length: 30 }, (_, i) => `語${i}`).join(",");
     expect(parseVocabularyResponse(response)).toHaveLength(20);

@@ -43,4 +43,23 @@ describe("removeHallucinationLoops", () => {
     const out = removeHallucinationLoops(input, { maxRepeats: 5 });
     expect(out).toBe("X\n本文\nY");
   });
+
+  it("空行を挟んだ反復も1つの塊として間引く", () => {
+    const input = ["奥…", "奥…", "奥…", "", "奥…", "奥…", "奥…"].join("\n");
+    const out = removeHallucinationLoops(input, { maxRepeats: 5 });
+    expect(out).toBe("奥…");
+  });
+
+  it("反復回数は空行を除いた実マッチ行数で数える(空行で水増ししない)", () => {
+    // マッチ2行 + 空行3行 = 5行だが、実マッチは2行なので除去しない
+    const input = ["奥…", "", "", "", "奥…"].join("\n");
+    const out = removeHallucinationLoops(input, { maxRepeats: 5 });
+    expect(out).toBe(input);
+  });
+
+  it("塊の末尾に接する空行は塊に含めず残す", () => {
+    const input = [...Array(5).fill("ループ"), "", "本文"].join("\n");
+    const out = removeHallucinationLoops(input, { maxRepeats: 5 });
+    expect(out).toBe("ループ\n\n本文");
+  });
 });

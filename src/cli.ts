@@ -8,6 +8,7 @@ import { Recorder, listAudioDevices } from "./pipeline/record.js";
 import { makeSummarizer } from "./summarizerFactory.js";
 import { processTranscript } from "./run.js";
 import { loadMaterials } from "./pipeline/material.js";
+import { extractVocabulary, mergeVocabulary } from "./pipeline/vocab.js";
 import { atomicWriteFile, formatTimestamp } from "./util/files.js";
 
 const USAGE = `講義ノート生成 CLI
@@ -75,10 +76,9 @@ async function main(): Promise<void> {
     ? Number(values["max-chars"])
     : DEFAULT_CONFIG.maxCharsPerChunk;
   // 用語集: --vocab 優先、無ければ既定設定（カンマ/読点区切り）
-  const vocabulary = values.vocab
+  const manualVocabulary = values.vocab
     ? values.vocab.split(/[,、]/).map((s) => s.trim()).filter((s) => s.length > 0)
     : DEFAULT_CONFIG.vocabulary;
-  const initialPrompt = buildInitialPrompt(vocabulary);
   const materialPaths = values.material ?? [];
 
   const log = (m: string) => console.error(`[lecture-note] ${m}`);
@@ -96,6 +96,23 @@ async function main(): Promise<void> {
     allowApiBilling: values["allow-api"] ?? false,
   });
 
+  // 授業資料は語彙抽出（文字起こし前）と要約の両方で使うため、先に読み込む
+  let materials = "";
+  if (materialPaths.length > 0) {
+    log(`授業資料を読み込み: ${materialPaths.join(", ")}`);
+    materials = await loadMaterials(materialPaths);
+  }
+
+  // 資料があれば固有名詞を自動抽出し、手動語彙（優先＝末尾）と結合する。
+  // 抽出は文字起こしの認識ヒント用なので、文字起こしをしない summarize では呼ばない。
+  const resolveVocabulary = async (): Promise<string[]> => {
+    if (materials === "" || mode === "summarize") return manualVocabulary;
+    log("資料から語彙を抽出中 ...");
+    const auto = await extractVocabulary(materials, summarizer, log);
+    if (auto.length > 0) log(`抽出した語彙: ${auto.join("、")}`);
+    return mergeVocabulary(auto, manualVocabulary);
+  };
+
   // サブコマンド判定
   const mode: "record" | "summarize" | "full" =
     positionals[0] === "record" ? "record" : positionals[0] === "summarize" ? "summarize" : "full";
@@ -106,6 +123,8 @@ async function main(): Promise<void> {
 
   let rawTranscript: string;
   let outDir: string;
+  let vocabulary: string[];
+  let initialPrompt: string | undefined;
 
   if (mode === "record") {
     outDir = join(outputRoot, `${stamp}_録音`);
@@ -127,6 +146,10 @@ async function main(): Promise<void> {
     await recorder.stop();
     log(`録音保存: ${audioPath}`);
 
+    // 語彙解決は録音停止後に行う（録音開始を遅らせない）
+    vocabulary = await resolveVocabulary();
+    initialPrompt = buildInitialPrompt(vocabulary);
+
     log(`文字起こし開始（${DEFAULT_CONFIG.whisperModel}）...`);
     rawTranscript = await transcribe(audioPath, {
       model: DEFAULT_CONFIG.whisperModel,
@@ -141,6 +164,9 @@ async function main(): Promise<void> {
     const stem = basename(inputPath, extname(inputPath));
     outDir = join(outputRoot, `${stamp}_${stem}`);
 
+    vocabulary = await resolveVocabulary();
+    initialPrompt = buildInitialPrompt(vocabulary);
+
     if (mode === "summarize") {
       log(`文字起こしを読み込み: ${inputPath}`);
       rawTranscript = await readFile(inputPath, "utf8");
@@ -154,13 +180,6 @@ async function main(): Promise<void> {
       });
       log("文字起こし完了");
     }
-  }
-
-  // 授業資料を読み込む（あれば）
-  let materials = "";
-  if (materialPaths.length > 0) {
-    log(`授業資料を読み込み: ${materialPaths.join(", ")}`);
-    materials = await loadMaterials(materialPaths);
   }
 
   const transcriptPath = join(outDir, "文字起こし.txt");

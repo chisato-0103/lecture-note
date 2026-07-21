@@ -46,14 +46,23 @@ export const DEFAULT_CONFIG: AppConfig = {
   liveModel: "mlx-community/whisper-small-mlx",
 };
 
-/** 語彙リストを --initial-prompt 用の1文字列にまとめる（長すぎると逆効果なので上限を設ける） */
-export function buildInitialPrompt(vocabulary: string[], maxChars = 600): string | undefined {
-  if (vocabulary.length === 0) return undefined;
+/**
+ * 語彙リストを --initial-prompt 用の1文字列にまとめる。
+ * Whisper はプロンプトを約223トークンに切り詰めて「末尾側」を残すため、
+ * 上限は日本語で安全な文字数（既定150）に抑え、超過時は先頭側の語から削る。
+ * 呼び出し側は優先して残したい語（手動指定の語彙）を配列の末尾に置くこと。
+ */
+export function buildInitialPrompt(vocabulary: string[], maxChars = 150): string | undefined {
+  const terms = vocabulary.map((t) => t.trim()).filter((t) => t.length > 0);
+  if (terms.length === 0) return undefined;
+
   let acc = "";
-  for (const term of vocabulary) {
-    const next = acc === "" ? term : `${acc}、${term}`;
+  for (let i = terms.length - 1; i >= 0; i--) {
+    const next = acc === "" ? terms[i]! : `${terms[i]!}、${acc}`;
     if (next.length > maxChars) break;
     acc = next;
   }
-  return acc === "" ? undefined : `次の固有名詞が登場します: ${acc}。`;
+  // 末尾の1語だけで上限を超える場合は、その語を上限まで切って使う
+  if (acc === "") acc = terms[terms.length - 1]!.slice(0, maxChars);
+  return `次の固有名詞が登場します: ${acc}。`;
 }

@@ -10,6 +10,7 @@ import { summarizeTranscript, MIN_TRANSCRIPT_CHARS } from "../run.js";
 import { makeSummarizer } from "../summarizerFactory.js";
 import { loadMaterials } from "./material.js";
 import { readJobMeta, filterExistingPaths } from "./jobMeta.js";
+import { extractVocabulary, mergeVocabulary } from "./vocab.js";
 
 /** 各録音フォルダで「次にやること」。skip は対象外または完了。 */
 export type NextStage = "transcribe" | "summarize" | "skip";
@@ -105,13 +106,42 @@ export async function processPendingJobs(deps: ProcessDeps): Promise<void> {
       });
       if (stage === "skip") continue;
 
-      // 1) 文字起こし（未なら実行）。ローカル・ネット不要。
+      // 背景で LLM を使えるか（語彙抽出・要約の両方がこれに従う）。
+      const canUseLlm = canSummarizeInBackground(config.engine, config.cloudConsent);
+      // 文字起こし済みで要約もできないなら、この周回でやることはない（資料も読まない）。
+      if (stage === "summarize" && !canUseLlm) continue;
+
+      // 資料は語彙抽出（文字起こし前）と要約の両方で使うため先に読む。
+      // 読込失敗（pdftotext 未導入等）でも文字起こしは進めたいので、ここでは保留して要約直前で投げる。
+      let materials = "";
+      let materialsError: unknown;
+      if (canUseLlm) {
+        const materialPaths = await filterExistingPaths((await readJobMeta(dir)).materialPaths);
+        if (materialPaths.length > 0) {
+          try {
+            materials = await loadMaterials(materialPaths);
+          } catch (err) {
+            materialsError = err;
+          }
+        }
+      }
+
+      // 1) 文字起こし（未なら実行）。ローカル・ネット不要（語彙抽出のみ LLM を使う）。
+      let vocabulary = config.vocabulary;
       let cleaned: string;
       if (stage === "transcribe") {
+        // 資料が読めていれば固有名詞を自動抽出して認識ヒントにする
+        if (materials !== "") {
+          const extractor = makeSummarizer({ engine: config.engine, model: config.model });
+          const auto = await extractVocabulary(materials, extractor, (m) =>
+            console.error(`[lecture-note] ${m}`),
+          );
+          vocabulary = mergeVocabulary(auto, config.vocabulary);
+        }
         const raw = await transcribe(audioPath, {
           model: config.whisperModel,
           language: config.language,
-          initialPrompt: buildInitialPrompt(config.vocabulary),
+          initialPrompt: buildInitialPrompt(vocabulary),
           outputDir: dir,
         });
         cleaned = removeHallucinationLoops(raw, { maxRepeats: config.maxRepeats });
@@ -133,16 +163,18 @@ export async function processPendingJobs(deps: ProcessDeps): Promise<void> {
       // 2) 要約（背景で可なら実行）。不可なら文字起こしまでで保留。
       // 未同意（claude かつ未同意）なら要約せず文字起こしまでで保留。
       // 復帰のたびに通知しない（同意すれば次回走査で要約される）。
-      if (!canSummarizeInBackground(config.engine, config.cloudConsent)) {
+      if (!canUseLlm) {
         continue;
       }
 
-      const materialPaths = await filterExistingPaths((await readJobMeta(dir)).materialPaths);
-      const materials = materialPaths.length > 0 ? await loadMaterials(materialPaths) : "";
+      // 資料が読めていないまま要約すると「資料抜きのノート」が確定してしまう。
+      // ノートを書かずに保留へ戻し、原因（pdftotext 未導入等）を解消すれば次回走査で回復させる。
+      if (materialsError) throw materialsError;
+
       const summarizer = makeSummarizer({ engine: config.engine, model: config.model });
       const note = await summarizeTranscript(cleaned, summarizer, {
         maxCharsPerChunk: config.maxCharsPerChunk,
-        vocabulary: config.vocabulary,
+        vocabulary,
         materials,
       });
       await atomicWriteFile(notePath, note);
